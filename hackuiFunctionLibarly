@@ -1,0 +1,1729 @@
+-- ============================================================
+-- BANDIT9 :: TERMINAL MENU + SOUL FOG DEATH EFFECT (FIXED PREVIEW & RESET)
+-- Положи этот LocalScript в StarterPlayerScripts.
+-- ============================================================
+
+local Players           = game:GetService("Players")
+local TweenService      = game:GetService("TweenService")
+local UserInputService  = game:GetService("UserInputService")
+local RunService        = game:GetService("RunService")
+local Workspace         = game:GetService("Workspace")
+
+local player   = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+------------------------------------------------------------
+-- НАСТРОЙКИ
+------------------------------------------------------------
+local KEY_TO_TOGGLE = Enum.KeyCode.RightShift
+
+local THEME = {
+    Bg          = Color3.fromRGB(4, 8, 6),
+    Panel       = Color3.fromRGB(6, 14, 10),
+    PanelDark   = Color3.fromRGB(3, 9, 6),
+    Green       = Color3.fromRGB(0, 255, 106),
+    GreenDim    = Color3.fromRGB(0, 140, 60),
+    GreenSoft   = Color3.fromRGB(0, 90, 45),
+    Text        = Color3.fromRGB(180, 255, 200),
+}
+
+local SECTIONS = {
+    {Name = "HOME",     Tag = "home",     Cmd = "cd /home"},
+    {Name = "MISC",     Tag = "misc",     Cmd = "cd /misc"},
+    {Name = "VISUALS",  Tag = "visuals",  Cmd = "cd /gfx/visuals"},
+    {Name = "SKINS",    Tag = "skins",    Cmd = "cd /assets/skins"},
+    {Name = "FABRIC",   Tag = "fabric",   Cmd = "cd /assets/fabric"},
+}
+
+local MATRIX_CHARS = "01"
+
+------------------------------------------------------------
+-- ПУБЛИЧНОЕ API
+------------------------------------------------------------
+local API = {}
+API.Callbacks = {
+    OnTabSelected        = function(tabName) end,
+    OnSimpleButtonClick  = function() end,
+    OnDialogConfirm      = function() end,
+    OnDialogCancel       = function() end,
+    OnToggleChanged      = function(state) end,
+    OnDescToggleChanged  = function(state) end,
+    OnSliderChanged      = function(value) end,
+    OnInputChanged       = function(text) end,
+    OnBallToggle         = function(state) end,
+    OnDeathEffectToggle  = function(state) end,
+    OnEffectTriggered    = function(effectName) end,
+}
+_G.BANDIT9_API = API
+
+------------------------------------------------------------
+-- ЭФФЕКТ SOUL FOG (УЛЬТРА ОПТИМИЗИРОВАННЫЙ)
+------------------------------------------------------------
+local BALLS_PER_PART = 30
+local MAX_TOTAL_BALLS = 300
+local activeEffects = {}
+
+local function FadeOutEffect(Balls, targetCharacter, isPreview, onComplete)
+    if not Balls or #Balls == 0 then
+        if isPreview and targetCharacter and targetCharacter.Parent then
+            for _, d in ipairs(targetCharacter:GetDescendants()) do
+                if d:IsA("BasePart") or d:IsA("Decal") then
+                    d.Transparency = 0
+                end
+            end
+        end
+        if onComplete then onComplete() end
+        return
+    end
+
+    for k = 1, #Balls do
+        local data = Balls[k]
+        if data.Fog then
+            data.Fog.Enabled = false
+        end
+    end
+
+    task.spawn(function()
+        for step = 1, 10 do
+            local t = step / 10
+            for k = 1, #Balls do
+                local data = Balls[k]
+                local ball = data.Part
+                if ball and ball.Parent then
+                    ball.Transparency = 0.1 + t * 0.9
+                    ball.Size = ball.Size * 0.9
+                end
+            end
+            task.wait(0.015)
+        end
+
+        for k = 1, #Balls do
+            local data = Balls[k]
+            if data.Part and data.Part.Parent then
+                data.Part:Destroy()
+            end
+        end
+
+        if isPreview and targetCharacter and targetCharacter.Parent then
+            for _, d in ipairs(targetCharacter:GetDescendants()) do
+                if d:IsA("BasePart") or d:IsA("Decal") then
+                    d.Transparency = 0
+                end
+            end
+        end
+
+        if onComplete then
+            onComplete()
+        end
+    end)
+end
+
+local function PlaySoulFogOnTarget(targetCharacter, isPreview, onEffectFinished)
+    if not targetCharacter or not targetCharacter.Parent then
+        if onEffectFinished then onEffectFinished() end
+        return
+    end
+
+    local rootPart = targetCharacter:FindFirstChild("HumanoidRootPart")
+    if not rootPart then
+        if onEffectFinished then onEffectFinished() end
+        return
+    end
+
+    for i = #activeEffects, 1, -1 do
+        FadeOutEffect(activeEffects[i], targetCharacter, isPreview)
+        table.remove(activeEffects, i)
+    end
+
+    -- Скрываем оригинальные детали (включая превью в ViewportFrame)
+    for _, d in ipairs(targetCharacter:GetDescendants()) do
+        if d:IsA("BasePart") then
+            d.Transparency = 1
+        elseif d:IsA("Decal") then
+            d.Transparency = 1
+        end
+    end
+
+    local Balls = {}
+    local totalCreated = 0
+
+    local descendants = targetCharacter:GetDescendants()
+    local validParts = {}
+    
+    for i = 1, #descendants do
+        local part = descendants[i]
+        if part and part:IsA("BasePart") then
+            table.insert(validParts, part)
+        end
+    end
+
+    local ballsPerPart = isPreview and 8 or BALLS_PER_PART
+    if #validParts > 0 then
+        local maxAllowedPerPart = math.floor(MAX_TOTAL_BALLS / #validParts)
+        if maxAllowedPerPart < ballsPerPart then
+            ballsPerPart = math.max(1, maxAllowedPerPart)
+        end
+    end
+
+    table.insert(activeEffects, Balls)
+
+    task.spawn(function()
+        for i = 1, #validParts do
+            local found = false
+            for _, b in ipairs(activeEffects) do
+                if b == Balls then found = true break end
+            end
+            if not found then break end
+
+            local part = validParts[i]
+            if part and part.Parent then
+                local partCFrame = part.CFrame
+                local sizeX, sizeY, sizeZ = part.Size.X, part.Size.Y, part.Size.Z
+
+                for j = 1, ballsPerPart do
+                    local ball = Instance.new("Part")
+                    ball.Shape = Enum.PartType.Ball
+                    ball.Size = Vector3.new(0.2, 0.2, 0.2)
+                    ball.Material = Enum.Material.Neon
+                    ball.Color = Color3.fromRGB(170, 0, 255)
+                    ball.CanCollide = false
+                    ball.Anchored = true
+                    ball.TopSurface = Enum.SurfaceType.Smooth
+                    ball.BottomSurface = Enum.SurfaceType.Smooth
+                    ball.Transparency = 0.1
+
+                    local offset = Vector3.new(
+                        (math.random() - 0.5) * (sizeX * 0.7),
+                        (math.random() - 0.5) * (sizeY * 0.7),
+                        (math.random() - 0.5) * (sizeZ * 0.7)
+                    )
+                    
+                    local initialCFrameOffset = partCFrame:ToObjectSpace(partCFrame * CFrame.new(offset))
+
+                    ball.CFrame = partCFrame * CFrame.new(offset)
+                    ball.Parent = targetCharacter.Parent
+
+                    local fog = Instance.new("ParticleEmitter")
+                    fog.Parent = ball
+                    fog.Texture = "rbxasset://textures/particles/smoke_main.dds"
+                    fog.Color = ColorSequence.new({
+                        ColorSequenceKeypoint.new(0, Color3.fromRGB(210, 80, 255)),
+                        ColorSequenceKeypoint.new(1, Color3.fromRGB(90, 0, 150))
+                    })
+                    fog.LightEmission = 0.5
+                    fog.Rate = 2
+                    fog.Lifetime = NumberRange.new(0.5, 0.8)
+                    fog.Speed = NumberRange.new(0.01, 0.03)
+                    fog.Drag = 8
+                    fog.RotSpeed = NumberRange.new(-15, 15)
+                    fog.Rotation = NumberRange.new(0, 360)
+                    fog.SpreadAngle = Vector2.new(180, 180)
+                    fog.Size = NumberSequence.new({
+                        NumberSequenceKeypoint.new(0, 0.1),
+                        NumberSequenceKeypoint.new(0.5, 0.2),
+                        NumberSequenceKeypoint.new(1, 0.3)
+                    })
+                    fog.Transparency = NumberSequence.new({
+                        NumberSequenceKeypoint.new(0, 0.6),
+                        NumberSequenceKeypoint.new(0.6, 0.8),
+                        NumberSequenceKeypoint.new(1, 1)
+                    })
+                    fog.Enabled = true
+
+                    totalCreated = totalCreated + 1
+                    Balls[totalCreated] = { 
+                        Part = ball, 
+                        Fog = fog, 
+                        BasePart = part, 
+                        Offset = initialCFrameOffset,
+                        Height = offset.Y,
+                        RandomSeed = math.random() * 50,
+                        LimitX = sizeX * 0.3,
+                        LimitY = sizeY * 0.3,
+                        LimitZ = sizeZ * 0.3
+                    }
+                end
+            end
+            task.defer(task.wait)
+        end
+    end)
+
+    task.spawn(function()
+        local timePassed = 0
+        while true do
+            local found = false
+            for _, b in ipairs(activeEffects) do
+                if b == Balls then found = true break end
+            end
+            if not found then break end
+
+            timePassed = timePassed + 0.08
+
+            for k = 1, #Balls do
+                local data = Balls[k]
+                local ball = data.Part
+                local sourcePart = data.BasePart
+
+                if ball and ball.Parent and sourcePart and sourcePart.Parent then
+                    local baseCF = sourcePart.CFrame
+                    
+                    local currentUpOffset = 0
+                    if not isPreview then
+                        local activationDelay = (1.5 - data.Height * 0.6) 
+                        local pullProgress = math.clamp((timePassed - activationDelay) * 0.5, 0, 1)
+                        pullProgress = pullProgress * pullProgress * (3 - 2 * pullProgress)
+                        currentUpOffset = pullProgress * 4.0
+                    end
+
+                    local jitterX = math.clamp((math.noise(timePassed * 3, data.RandomSeed, 0) - 0.5) * data.LimitX, -data.LimitX, data.LimitX)
+                    local jitterY = math.clamp((math.noise(0, timePassed * 3, data.RandomSeed) - 0.5) * data.LimitY, -data.LimitY, data.LimitY)
+                    local jitterZ = math.clamp((math.noise(data.RandomSeed, 0, timePassed * 3) - 0.5) * data.LimitZ, -data.LimitZ, data.LimitZ)
+
+                    ball.CFrame = baseCF * data.Offset + Vector3.new(jitterX, jitterY, jitterZ) + Vector3.new(0, currentUpOffset, 0)
+
+                    if data.Fog then
+                        data.Fog.Rate = isPreview and 2 or 6
+                    end
+                end
+            end
+            task.wait(0.08)
+        end
+    end)
+
+    if isPreview then
+        task.spawn(function()
+            task.wait(5.0)
+            for i = #activeEffects, 1, -1 do
+                if activeEffects[i] == Balls then
+                    FadeOutEffect(Balls, targetCharacter, true, function()
+                        if onEffectFinished then onEffectFinished() end
+                    end)
+                    table.remove(activeEffects, i)
+                    break
+                end
+            end
+        end)
+    else
+        task.spawn(function()
+            task.wait(5.0)
+            for i = #activeEffects, 1, -1 do
+                if activeEffects[i] == Balls then
+                    FadeOutEffect(Balls, targetCharacter, false)
+                    table.remove(activeEffects, i)
+                    if targetCharacter and targetCharacter.Parent then
+                        targetCharacter:Destroy()
+                    end
+                    break
+                end
+            end
+        end)
+    end
+end
+
+------------------------------------------------------------
+-- СИСТЕМА ОТСЛЕЖИВАНИЯ КОМАНД И СМЕРТИ
+------------------------------------------------------------
+local deathEffectEnabled = false
+
+local function SetupTeamTracking()
+    local charactersFolder = Workspace:WaitForChild("Characters", 5)
+    if not charactersFolder then return end
+
+    local tFolder = charactersFolder:WaitForChild("Terrorists", 5)
+    local ctFolder = charactersFolder:WaitForChild("Counter-Terrorists", 5)
+
+    local myChar = player.Character or player.CharacterAdded:Wait()
+    local enemyFolder = nil
+    
+    if tFolder and tFolder:FindFirstChild(myChar.Name) then
+        enemyFolder = ctFolder
+    elseif ctFolder and ctFolder:FindFirstChild(myChar.Name) then
+        enemyFolder = tFolder
+    end
+
+    if enemyFolder then
+        enemyFolder.ChildRemoved:Connect(function(child)
+            if child:IsA("Model") and deathEffectEnabled then
+                PlaySoulFogOnTarget(child, false)
+            end
+        end)
+    end
+end
+
+player.CharacterAdded:Connect(function()
+    task.wait(1)
+    SetupTeamTracking()
+end)
+
+task.spawn(SetupTeamTracking)
+
+local EFFECTS = {
+    {
+        Name = "GhostChams",
+        Preview = function(charClone, onFinish)
+            PlaySoulFogOnTarget(charClone, true, onFinish)
+        end,
+    },
+}
+
+------------------------------------------------------------
+-- ОЧИСТКА СТАРОГО GUI
+------------------------------------------------------------
+local old = playerGui:FindFirstChild("BANDIT9_TERMINAL")
+if old then old:Destroy() end
+
+------------------------------------------------------------
+-- БАЗА
+------------------------------------------------------------
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "BANDIT9_TERMINAL"
+screenGui.ResetOnSpawn = false
+screenGui.IgnoreGuiInset = true
+screenGui.DisplayOrder = 999
+screenGui.Parent = playerGui
+
+------------------------------------------------------------
+-- ОКНО ФОТО
+------------------------------------------------------------
+local PHOTO_IMAGE_ID = "rbxassetid://0"
+
+local photoGui = Instance.new("Frame")
+photoGui.Name = "PhotoWindow"
+photoGui.AnchorPoint = Vector2.new(0.5, 0.5)
+photoGui.Position = UDim2.new(0.5, 0, 0.5, 0)
+photoGui.Size = UDim2.new(0, 0, 0, 0)
+photoGui.BackgroundColor3 = THEME.Bg
+photoGui.BorderSizePixel = 0
+photoGui.Visible = false
+photoGui.ZIndex = 40
+photoGui.Parent = screenGui
+
+local photoCorner = Instance.new("UICorner")
+photoCorner.CornerRadius = UDim.new(0, 6)
+photoCorner.Parent = photoGui
+
+local photoStroke = Instance.new("UIStroke")
+photoStroke.Color = THEME.Green
+photoStroke.Thickness = 1.5
+photoStroke.Transparency = 0.1
+photoStroke.Parent = photoGui
+
+local photoTitle = Instance.new("TextLabel")
+photoTitle.BackgroundTransparency = 1
+photoTitle.Position = UDim2.new(0, 10, 0, 6)
+photoTitle.Size = UDim2.new(1, -20, 0, 18)
+photoTitle.Font = Enum.Font.RobotoMono
+photoTitle.TextSize = 12
+photoTitle.TextColor3 = THEME.GreenDim
+photoTitle.TextXAlignment = Enum.TextXAlignment.Left
+photoTitle.Text = "// photo preview"
+photoTitle.ZIndex = 41
+photoTitle.Parent = photoGui
+
+local photoImage = Instance.new("ImageLabel")
+photoImage.Position = UDim2.new(0, 10, 0, 28)
+photoImage.Size = UDim2.new(1, -20, 1, -38)
+photoImage.BackgroundTransparency = 1
+photoImage.Image = PHOTO_IMAGE_ID
+photoImage.ScaleType = Enum.ScaleType.Fit
+photoImage.ZIndex = 41
+photoImage.Parent = photoGui
+
+local photoDragging = false
+local photoDragInput
+local photoDragStart
+local photoStartPos
+
+local function updatePhotoDrag(input)
+    local delta = input.Position - photoDragStart
+    photoGui.Position = UDim2.new(
+        photoStartPos.X.Scale, photoStartPos.X.Offset + delta.X,
+        photoStartPos.Y.Scale, photoStartPos.Y.Offset + delta.Y
+    )
+end
+
+photoGui.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        photoDragging = true
+        photoDragStart = input.Position
+        photoStartPos = photoGui.Position
+
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                photoDragging = false
+            end
+        end)
+    end
+end)
+
+photoGui.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        photoDragInput = input
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if input == photoDragInput and photoDragging then
+        updatePhotoDrag(input)
+    end
+end)
+
+local PHOTO_SIZE = UDim2.new(0, 260, 0, 260)
+local function setPhotoWindowVisible(visible)
+    if visible then
+        photoGui.Visible = true
+        photoGui.Size = UDim2.new(0, 0, 0, 0)
+        TweenService:Create(photoGui, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+            Size = PHOTO_SIZE
+        }):Play()
+    else
+        local tw = TweenService:Create(photoGui, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+            Size = UDim2.new(0, 0, 0, 0)
+        })
+        tw:Play()
+        tw.Completed:Connect(function()
+            photoGui.Visible = false
+        end)
+    end
+end
+
+------------------------------------------------------------
+-- MATRIX RAIN BACKGROUND
+------------------------------------------------------------
+local matrixHolder = Instance.new("Frame")
+matrixHolder.Name = "MatrixRain"
+matrixHolder.Size = UDim2.new(1, 0, 1, 0)
+matrixHolder.BackgroundTransparency = 1
+matrixHolder.ClipsDescendants = true
+matrixHolder.Visible = false
+matrixHolder.ZIndex = 1
+matrixHolder.Parent = screenGui
+
+local matrixDim = Instance.new("Frame")
+matrixDim.Size = UDim2.new(1, 0, 1, 0)
+matrixDim.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+matrixDim.BackgroundTransparency = 0.35
+matrixDim.BorderSizePixel = 0
+matrixDim.ZIndex = 2
+matrixDim.Parent = matrixHolder
+
+local COLUMN_COUNT = 40
+local columns = {}
+
+for i = 1, COLUMN_COUNT do
+    local colX = (i - 1) / COLUMN_COUNT
+    local col = Instance.new("Frame")
+    col.BackgroundTransparency = 1
+    col.Position = UDim2.new(colX, 0, 0, 0)
+    col.Size = UDim2.new(1 / COLUMN_COUNT, 0, 1, 0)
+    col.ZIndex = 1
+    col.Parent = matrixHolder
+
+    local label = Instance.new("TextLabel")
+    label.BackgroundTransparency = 1
+    label.Size = UDim2.new(1, 0, 1, 0)
+    label.Font = Enum.Font.RobotoMono
+    label.TextSize = 16
+    label.TextYAlignment = Enum.TextYAlignment.Top
+    label.TextXAlignment = Enum.TextXAlignment.Center
+    label.TextColor3 = THEME.Green
+    label.TextTransparency = 0.15
+    label.TextWrapped = true
+    label.RichText = true
+    label.ZIndex = 1
+    label.Parent = col
+
+    local chars = {}
+    for r = 1, 40 do
+        chars[r] = MATRIX_CHARS:sub(math.random(1, #MATRIX_CHARS), math.random(1, #MATRIX_CHARS))
+    end
+    label.Text = table.concat(chars, "\n")
+
+    columns[i] = {
+        label = label,
+        speed = math.random(40, 140) / 10,
+        offset = math.random(0, 1000),
+    }
+end
+
+local matrixConn
+local function startMatrix()
+    if matrixConn then return end
+    matrixConn = RunService.RenderStepped:Connect(function(dt)
+        for _, c in ipairs(columns) do
+            c.offset = c.offset + dt * c.speed * 20
+            c.label.Position = UDim2.new(0, 0, 0, (c.offset % 800) - 800)
+        end
+    end)
+end
+local function stopMatrix()
+    if matrixConn then
+        matrixConn:Disconnect()
+        matrixConn = nil
+    end
+end
+
+------------------------------------------------------------
+-- ГЛАВНОЕ ОКНО
+------------------------------------------------------------
+local main = Instance.new("Frame")
+main.Name = "Main"
+main.AnchorPoint = Vector2.new(0.5, 0.5)
+main.Position = UDim2.new(0.5, 0, 0.5, 0)
+main.Size = UDim2.new(0, 0, 0, 0)
+main.BackgroundColor3 = THEME.Bg
+main.BorderSizePixel = 0
+main.ClipsDescendants = true
+main.ZIndex = 5
+main.Visible = false
+main.Parent = screenGui
+
+local mainCorner = Instance.new("UICorner")
+mainCorner.CornerRadius = UDim.new(0, 6)
+mainCorner.Parent = main
+
+local mainStroke = Instance.new("UIStroke")
+mainStroke.Color = THEME.Green
+mainStroke.Thickness = 1.5
+mainStroke.Transparency = 0.1
+mainStroke.Parent = main
+
+local glow1 = Instance.new("UIStroke")
+glow1.Color = THEME.Green
+glow1.Thickness = 4
+glow1.Transparency = 0.85
+glow1.Parent = main
+
+local scan = Instance.new("Frame")
+scan.Name = "Scanlines"
+scan.Size = UDim2.new(1, 0, 1, 0)
+scan.BackgroundTransparency = 1
+scan.ZIndex = 20
+scan.Parent = main
+
+for i = 1, 60 do
+    local line = Instance.new("Frame")
+    line.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    line.BackgroundTransparency = 0.92
+    line.BorderSizePixel = 0
+    line.Size = UDim2.new(1, 0, 0, 1)
+    line.Position = UDim2.new(0, 0, 0, (i - 1) * 6)
+    line.ZIndex = 20
+    line.Parent = scan
+end
+
+------------------------------------------------------------
+-- ШАПКА / TOPBAR
+------------------------------------------------------------
+local topBar = Instance.new("Frame")
+topBar.Name = "TopBar"
+topBar.Size = UDim2.new(1, 0, 0, 40)
+topBar.BackgroundColor3 = THEME.PanelDark
+topBar.BorderSizePixel = 0
+topBar.ZIndex = 6
+topBar.Parent = main
+
+local topLine = Instance.new("Frame")
+topLine.BackgroundColor3 = THEME.Green
+topLine.BorderSizePixel = 0
+topLine.Size = UDim2.new(1, 0, 0, 1)
+topLine.Position = UDim2.new(0, 0, 1, -1)
+topLine.ZIndex = 6
+topLine.Parent = topBar
+
+local dotsHolder = Instance.new("Frame")
+dotsHolder.BackgroundTransparency = 1
+dotsHolder.Position = UDim2.new(0, 14, 0.5, -5)
+dotsHolder.Size = UDim2.new(0, 60, 0, 10)
+dotsHolder.ZIndex = 6
+dotsHolder.Parent = topBar
+
+local dotColors = {Color3.fromRGB(255, 90, 90), Color3.fromRGB(255, 210, 80), THEME.Green}
+for i, c in ipairs(dotColors) do
+    local dot = Instance.new("Frame")
+    dot.Size = UDim2.new(0, 10, 0, 10)
+    dot.Position = UDim2.new(0, (i - 1) * 18, 0, 0)
+    dot.BackgroundColor3 = c
+    dot.ZIndex = 6
+    dot.Parent = dotsHolder
+    local dc = Instance.new("UICorner")
+    dc.CornerRadius = UDim.new(1, 0)
+    dc.Parent = dot
+end
+
+local titleLabel = Instance.new("TextLabel")
+titleLabel.BackgroundTransparency = 1
+titleLabel.Position = UDim2.new(0, 90, 0, 0)
+titleLabel.Size = UDim2.new(1, -105, 1, 0)
+titleLabel.Font = Enum.Font.RobotoMono
+titleLabel.Text = "root@bandit9:~$"
+titleLabel.TextColor3 = THEME.Green
+titleLabel.TextSize = 16
+titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+titleLabel.ZIndex = 6
+titleLabel.Parent = topBar
+
+------------------------------------------------------------
+-- WATERMARK BANDIT9
+------------------------------------------------------------
+local watermark = Instance.new("Frame")
+watermark.Name = "Watermark"
+watermark.AnchorPoint = Vector2.new(0.5, 0)
+watermark.Position = UDim2.new(0.5, 0, 0, -40)
+watermark.Size = UDim2.new(0, 220, 0, 30)
+watermark.BackgroundColor3 = THEME.PanelDark
+watermark.BorderSizePixel = 0
+watermark.ZIndex = 10
+watermark.Parent = screenGui
+
+local wmCorner = Instance.new("UICorner")
+wmCorner.CornerRadius = UDim.new(0, 4)
+wmCorner.Parent = watermark
+
+local wmStroke = Instance.new("UIStroke")
+wmStroke.Color = THEME.Green
+wmStroke.Thickness = 1
+wmStroke.Transparency = 0.1
+wmStroke.Parent = watermark
+
+local wmLabel = Instance.new("TextLabel")
+wmLabel.BackgroundTransparency = 1
+wmLabel.Size = UDim2.new(1, 0, 1, 0)
+wmLabel.Font = Enum.Font.RobotoMono
+wmLabel.Text = "> BANDIT9_"
+wmLabel.TextColor3 = THEME.Green
+wmLabel.TextSize = 16
+wmLabel.ZIndex = 10
+wmLabel.Parent = watermark
+
+task.spawn(function()
+    while watermark.Parent do
+        wmLabel.Text = "> BANDIT9_"
+        task.wait(0.5)
+        wmLabel.Text = "> BANDIT9"
+        task.wait(0.5)
+    end
+end)
+
+------------------------------------------------------------
+-- БОКОВАЯ ПАНЕЛЬ
+------------------------------------------------------------
+local sideBar = Instance.new("Frame")
+sideBar.Name = "SideBar"
+sideBar.Position = UDim2.new(0, 0, 0, 40)
+sideBar.Size = UDim2.new(0, 160, 1, -40)
+sideBar.BackgroundColor3 = Color3.fromRGB(9, 22, 14)
+sideBar.BorderSizePixel = 0
+sideBar.ZIndex = 6
+sideBar.Parent = main
+
+local sideHeader = Instance.new("TextLabel")
+sideHeader.BackgroundTransparency = 1
+sideHeader.Size = UDim2.new(1, -16, 0, 20)
+sideHeader.Position = UDim2.new(0, 8, 0, 6)
+sideHeader.Font = Enum.Font.RobotoMono
+sideHeader.TextSize = 12
+sideHeader.TextColor3 = THEME.GreenDim
+sideHeader.TextXAlignment = Enum.TextXAlignment.Left
+sideHeader.Text = "// SECTIONS"
+sideHeader.ZIndex = 6
+sideHeader.Parent = sideBar
+
+local sideLine = Instance.new("Frame")
+sideLine.Name = "SideDivider"
+sideLine.BackgroundColor3 = THEME.GreenSoft
+sideLine.BorderSizePixel = 0
+sideLine.Size = UDim2.new(0, 1, 1, -40)
+sideLine.Position = UDim2.new(0, 159, 0, 40)
+sideLine.ZIndex = 6
+sideLine.Parent = main
+
+local tabListHolder = Instance.new("Frame")
+tabListHolder.Name = "TabList"
+tabListHolder.BackgroundTransparency = 1
+tabListHolder.Position = UDim2.new(0, 8, 0, 30)
+tabListHolder.Size = UDim2.new(1, -16, 1, -38)
+tabListHolder.ZIndex = 6
+tabListHolder.Parent = sideBar
+
+local sideList = Instance.new("UIListLayout")
+sideList.Padding = UDim.new(0, 4)
+sideList.SortOrder = Enum.SortOrder.LayoutOrder
+sideList.Parent = tabListHolder
+
+local activeIndicator = Instance.new("Frame")
+activeIndicator.Name = "ActiveIndicator"
+activeIndicator.Size = UDim2.new(0, 3, 0, 34)
+activeIndicator.Position = UDim2.new(0, 0, 0, 40)
+activeIndicator.BackgroundColor3 = THEME.Green
+activeIndicator.BorderSizePixel = 0
+activeIndicator.ZIndex = 8
+activeIndicator.Parent = main
+
+local activeIndicatorCorner = Instance.new("UICorner")
+activeIndicatorCorner.CornerRadius = UDim.new(1, 0)
+activeIndicatorCorner.Parent = activeIndicator
+
+local activeIndicatorGlow = Instance.new("UIStroke")
+activeIndicatorGlow.Color = THEME.Green
+activeIndicatorGlow.Thickness = 3
+activeIndicatorGlow.Transparency = 0.6
+activeIndicatorGlow.Parent = activeIndicator
+
+------------------------------------------------------------
+-- КОНТЕНТ
+------------------------------------------------------------
+local content = Instance.new("Frame")
+content.Name = "Content"
+content.Position = UDim2.new(0, 160, 0, 40)
+content.Size = UDim2.new(1, -160, 1, -40)
+content.BackgroundTransparency = 1
+content.ClipsDescendants = true
+content.ZIndex = 6
+content.Parent = main
+
+------------------------------------------------------------
+-- УТИЛИТЫ АНИМАЦИЙ
+------------------------------------------------------------
+local function animatePress(button, stroke)
+    local originalThickness = stroke and stroke.Thickness or 1
+    local originalTransparency = stroke and stroke.Transparency or 0.3
+
+    button.MouseButton1Down:Connect(function()
+        TweenService:Create(button, TweenInfo.new(0.07, Enum.EasingStyle.Quad), {
+            Size = button.Size - UDim2.new(0, 4, 0, 3)
+        }):Play()
+        if stroke then
+            TweenService:Create(stroke, TweenInfo.new(0.07), {
+                Transparency = 0,
+                Thickness = originalThickness + 1.5
+            }):Play()
+        end
+    end)
+    button.MouseButton1Up:Connect(function()
+        TweenService:Create(button, TweenInfo.new(0.15, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+            Size = button.Size + UDim2.new(0, 4, 0, 3)
+        }):Play()
+        if stroke then
+            TweenService:Create(stroke, TweenInfo.new(0.25), {
+                Transparency = originalTransparency,
+                Thickness = originalThickness
+            }):Play()
+        end
+    end)
+end
+
+local function animateHover(button, baseColor, hoverColor)
+    button.MouseEnter:Connect(function()
+        TweenService:Create(button, TweenInfo.new(0.15), {BackgroundColor3 = hoverColor}):Play()
+    end)
+    button.MouseLeave:Connect(function()
+        TweenService:Create(button, TweenInfo.new(0.15), {BackgroundColor3 = baseColor}):Play()
+    end)
+end
+
+local function addBorder(button)
+    local crisp = Instance.new("UIStroke")
+    crisp.Color = THEME.Green
+    crisp.Thickness = 1
+    crisp.Transparency = 0.1
+    crisp.LineJoinMode = Enum.LineJoinMode.Miter
+    crisp.Parent = button
+    return crisp
+end
+
+local function clickScan(button)
+    button.MouseButton1Click:Connect(function()
+        local flash = Instance.new("Frame")
+        flash.BackgroundColor3 = THEME.Green
+        flash.BackgroundTransparency = 0.6
+        flash.BorderSizePixel = 0
+        flash.Size = UDim2.new(0, 4, 1, 0)
+        flash.Position = UDim2.new(0, 0, 0, 0)
+        flash.ZIndex = button.ZIndex + 1
+        flash.Parent = button
+
+        local target = TweenService:Create(flash, TweenInfo.new(0.35, Enum.EasingStyle.Quad), {
+            Position = UDim2.new(1, -4, 0, 0),
+            BackgroundTransparency = 1,
+        })
+        target:Play()
+        target.Completed:Connect(function()
+            flash:Destroy()
+        end)
+    end)
+end
+
+local function addLabel(page, text, yPos)
+    local lbl = Instance.new("TextLabel")
+    lbl.BackgroundTransparency = 1
+    lbl.Position = UDim2.new(0, 0, 0, yPos)
+    lbl.Size = UDim2.new(1, 0, 0, 16)
+    lbl.Font = Enum.Font.RobotoMono
+    lbl.TextSize = 12
+    lbl.TextColor3 = THEME.GreenDim
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Text = text
+    lbl.ZIndex = 6
+    lbl.Parent = page
+    return lbl
+end
+
+------------------------------------------------------------
+-- МОДАЛЬНОЕ ОКНО CONFIRM / CANCEL
+------------------------------------------------------------
+local modalOverlay = Instance.new("Frame")
+modalOverlay.Name = "ModalOverlay"
+modalOverlay.Size = UDim2.new(1, 0, 1, 0)
+modalOverlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+modalOverlay.BackgroundTransparency = 1
+modalOverlay.BorderSizePixel = 0
+modalOverlay.Visible = false
+modalOverlay.ZIndex = 50
+modalOverlay.Parent = main
+
+local modalBox = Instance.new("Frame")
+modalBox.Name = "ModalBox"
+modalBox.AnchorPoint = Vector2.new(0.5, 0.5)
+modalBox.Position = UDim2.new(0.5, 0, 0.5, 0)
+modalBox.Size = UDim2.new(0, 0, 0, 0)
+modalBox.BackgroundColor3 = THEME.Bg
+modalBox.BorderSizePixel = 0
+modalBox.ZIndex = 51
+modalBox.ClipsDescendants = true
+modalBox.Parent = modalOverlay
+
+local modalCorner = Instance.new("UICorner")
+modalCorner.CornerRadius = UDim.new(0, 6)
+modalCorner.Parent = modalBox
+
+local modalStroke = Instance.new("UIStroke")
+modalStroke.Color = THEME.Green
+modalStroke.Thickness = 2
+modalStroke.Transparency = 0
+modalStroke.Parent = modalBox
+
+local modalTitle = Instance.new("TextLabel")
+modalTitle.BackgroundTransparency = 1
+modalTitle.Position = UDim2.new(0, 16, 0, 14)
+modalTitle.Size = UDim2.new(1, -32, 0, 20)
+modalTitle.Font = Enum.Font.RobotoMono
+modalTitle.TextSize = 15
+modalTitle.TextColor3 = THEME.Green
+modalTitle.TextXAlignment = Enum.TextXAlignment.Left
+modalTitle.Text = "## CONFIRM ACTION"
+modalTitle.ZIndex = 52
+modalTitle.Parent = modalBox
+
+local modalMessage = Instance.new("TextLabel")
+modalMessage.BackgroundTransparency = 1
+modalMessage.Position = UDim2.new(0, 16, 0, 42)
+modalMessage.Size = UDim2.new(1, -32, 0, 44)
+modalMessage.Font = Enum.Font.RobotoMono
+modalMessage.TextSize = 13
+modalMessage.TextWrapped = true
+modalMessage.TextColor3 = THEME.GreenDim
+modalMessage.TextXAlignment = Enum.TextXAlignment.Left
+modalMessage.TextYAlignment = Enum.TextYAlignment.Top
+modalMessage.Text = "Are you sure you want to proceed?"
+modalMessage.ZIndex = 52
+modalMessage.Parent = modalBox
+
+local modalConfirmBtn = Instance.new("TextButton")
+modalConfirmBtn.AnchorPoint = Vector2.new(0, 1)
+modalConfirmBtn.Position = UDim2.new(0, 16, 1, -14)
+modalConfirmBtn.Size = UDim2.new(0, 110, 0, 32)
+modalConfirmBtn.BackgroundColor3 = THEME.GreenSoft
+modalConfirmBtn.AutoButtonColor = false
+modalConfirmBtn.Font = Enum.Font.RobotoMono
+modalConfirmBtn.TextSize = 14
+modalConfirmBtn.TextColor3 = Color3.fromRGB(10, 20, 12)
+modalConfirmBtn.Text = "CONFIRM"
+modalConfirmBtn.ZIndex = 52
+modalConfirmBtn.Parent = modalBox
+
+local modalConfirmCorner = Instance.new("UICorner")
+modalConfirmCorner.CornerRadius = UDim.new(0, 4)
+modalConfirmCorner.Parent = modalConfirmBtn
+
+local modalCancelBtn = Instance.new("TextButton")
+modalCancelBtn.AnchorPoint = Vector2.new(1, 1)
+modalCancelBtn.Position = UDim2.new(1, -16, 1, -14)
+modalCancelBtn.Size = UDim2.new(0, 110, 0, 32)
+modalCancelBtn.BackgroundColor3 = Color3.fromRGB(6, 15, 10)
+modalCancelBtn.AutoButtonColor = false
+modalCancelBtn.Font = Enum.Font.RobotoMono
+modalCancelBtn.TextSize = 14
+modalCancelBtn.TextColor3 = THEME.Green
+modalCancelBtn.Text = "CANCEL"
+modalCancelBtn.ZIndex = 52
+modalCancelBtn.Parent = modalBox
+
+local modalCancelStroke = addBorder(modalCancelBtn)
+local modalCancelCorner = Instance.new("UICorner")
+modalCancelCorner.CornerRadius = UDim.new(0, 4)
+modalCancelCorner.Parent = modalCancelBtn
+
+local modalConfirmConn, modalCancelConn
+local function showConfirmDialog(message, onConfirm, onCancel)
+    if modalConfirmConn then modalConfirmConn:Disconnect() end
+    if modalCancelConn then modalCancelConn:Disconnect() end
+
+    modalMessage.Text = message or "Are you sure you want to proceed?"
+    modalOverlay.Visible = true
+    modalOverlay.BackgroundTransparency = 1
+    modalBox.Size = UDim2.new(0, 0, 0, 0)
+
+    TweenService:Create(modalOverlay, TweenInfo.new(0.2), {BackgroundTransparency = 0.5}):Play()
+    TweenService:Create(modalBox, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+        Size = UDim2.new(0, 280, 0, 130)
+    }):Play()
+
+    local function closeModal()
+        TweenService:Create(modalBox, TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+            Size = UDim2.new(0, 0, 0, 0)
+        }):Play()
+        TweenService:Create(modalOverlay, TweenInfo.new(0.15), {BackgroundTransparency = 1}):Play()
+        task.delay(0.15, function()
+            modalOverlay.Visible = false
+        end)
+    end
+
+    modalConfirmConn = modalConfirmBtn.MouseButton1Click:Connect(function()
+        closeModal()
+        API.Callbacks.OnDialogConfirm()
+        if onConfirm then onConfirm() end
+    end)
+    modalCancelConn = modalCancelBtn.MouseButton1Click:Connect(function()
+        closeModal()
+        API.Callbacks.OnDialogCancel()
+        if onCancel then onCancel() end
+    end)
+end
+
+animatePress(modalConfirmBtn)
+animateHover(modalConfirmBtn, THEME.GreenSoft, THEME.Green)
+clickScan(modalConfirmBtn)
+
+animatePress(modalCancelBtn, modalCancelStroke)
+animateHover(modalCancelBtn, Color3.fromRGB(6, 15, 10), Color3.fromRGB(120, 20, 20))
+clickScan(modalCancelBtn)
+
+------------------------------------------------------------
+-- СОЗДАНИЕ РАЗДЕЛОВ
+------------------------------------------------------------
+local pages = {}
+local tabButtons = {}
+local activeTab = nil
+
+local function setActiveTab(name, cmd)
+    if activeTab == name then return end
+    activeTab = name
+    API.Callbacks.OnTabSelected(name)
+
+    for tabName, page in pairs(pages) do
+        local btn = tabButtons[tabName]
+        if tabName == name then
+            page.Visible = true
+            page.Position = UDim2.new(0.06, 0, 0, 0)
+            TweenService:Create(page, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+                Position = UDim2.new(0, 0, 0, 0),
+            }):Play()
+
+            btn.BackgroundColor3 = THEME.GreenSoft
+            btn.TextColor3 = Color3.fromRGB(10, 20, 12)
+
+            local targetY = btn.AbsolutePosition.Y - main.AbsolutePosition.Y
+            local targetH = btn.AbsoluteSize.Y
+            TweenService:Create(activeIndicator, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                Position = UDim2.new(0, 0, 0, targetY),
+                Size = UDim2.new(0, 3, 0, targetH),
+            }):Play()
+        else
+            page.Visible = false
+            btn.BackgroundColor3 = Color3.fromRGB(6, 15, 10)
+            btn.TextColor3 = THEME.Green
+        end
+    end
+end
+
+local function updatePageCanvas(page)
+    local maxBottom = 0
+    for _, child in ipairs(page:GetChildren()) do
+        if child:IsA("GuiObject") then
+            local bottom = child.Position.Y.Offset + child.Size.Y.Offset
+            if bottom > maxBottom then
+                maxBottom = bottom
+            end
+        end
+    end
+    page.CanvasSize = UDim2.new(0, 0, 0, maxBottom + 30)
+end
+
+for i, section in ipairs(SECTIONS) do
+    local tabBtn = Instance.new("TextButton")
+    tabBtn.Name = section.Name
+    tabBtn.LayoutOrder = i
+    tabBtn.Size = UDim2.new(1, 0, 0, 34)
+    tabBtn.BackgroundColor3 = Color3.fromRGB(6, 15, 10)
+    tabBtn.AutoButtonColor = false
+    tabBtn.Text = "  > " .. section.Name
+    tabBtn.TextXAlignment = Enum.TextXAlignment.Left
+    tabBtn.Font = Enum.Font.RobotoMono
+    tabBtn.TextSize = 14
+    tabBtn.TextColor3 = THEME.Green
+    tabBtn.ZIndex = 7
+    tabBtn.Parent = tabListHolder
+
+    local tabStroke = addBorder(tabBtn)
+    local tabCorner = Instance.new("UICorner")
+    tabCorner.CornerRadius = UDim.new(0, 4)
+    tabCorner.Parent = tabBtn
+
+    animatePress(tabBtn, tabStroke)
+    animateHover(tabBtn, Color3.fromRGB(6, 15, 10), THEME.GreenSoft)
+    clickScan(tabBtn)
+
+    tabBtn.MouseButton1Click:Connect(function()
+        setActiveTab(section.Name, section.Cmd)
+    end)
+
+    tabButtons[section.Name] = tabBtn
+
+    local page = Instance.new("ScrollingFrame")
+    page.Name = section.Name .. "_Page"
+    page.Size = UDim2.new(1, 0, 1, 0)
+    page.BackgroundTransparency = 1
+    page.Visible = false
+    page.ZIndex = 6
+    page.BorderSizePixel = 0
+    page.ScrollingDirection = Enum.ScrollingDirection.Y
+    page.ScrollBarThickness = 10
+    page.ScrollBarImageColor3 = THEME.Green
+    page.ScrollBarImageTransparency = 0.1
+    page.CanvasSize = UDim2.new(0, 0, 0, 0)
+    page.Parent = content
+
+    local pagePad = Instance.new("UIPadding")
+    pagePad.PaddingTop = UDim.new(0, 16)
+    pagePad.PaddingLeft = UDim.new(0, 18)
+    pagePad.PaddingRight = UDim.new(0, 18)
+    pagePad.Parent = page
+
+    local pageTitle = Instance.new("TextLabel")
+    pageTitle.BackgroundTransparency = 1
+    pageTitle.Size = UDim2.new(1, 0, 0, 26)
+    pageTitle.Font = Enum.Font.RobotoMono
+    pageTitle.TextSize = 20
+    pageTitle.TextXAlignment = Enum.TextXAlignment.Left
+    pageTitle.TextColor3 = THEME.Green
+    pageTitle.Text = "## " .. section.Name
+    pageTitle.ZIndex = 6
+    pageTitle.Parent = page
+
+    if section.Name == "HOME" then
+        local y = 40
+        addLabel(page, "// input field", y)
+        y = y + 18
+
+        local inputBox = Instance.new("TextBox")
+        inputBox.Position = UDim2.new(0, 0, 0, y)
+        inputBox.Size = UDim2.new(0, 240, 0, 32)
+        inputBox.BackgroundColor3 = Color3.fromRGB(6, 15, 10)
+        inputBox.Font = Enum.Font.RobotoMono
+        inputBox.TextSize = 14
+        inputBox.TextColor3 = THEME.Green
+        inputBox.PlaceholderText = "type here..."
+        inputBox.PlaceholderColor3 = THEME.GreenDim
+        inputBox.Text = ""
+        inputBox.ClearTextOnFocus = false
+        inputBox.ZIndex = 6
+        inputBox.Parent = page
+
+        local inputCorner = Instance.new("UICorner")
+        inputCorner.CornerRadius = UDim.new(0, 4)
+        inputCorner.Parent = inputBox
+        local inputStroke = addBorder(inputBox)
+
+        inputBox:GetPropertyChangedSignal("Text"):Connect(function()
+            API.Callbacks.OnInputChanged(inputBox.Text)
+        end)
+        y = y + 48
+
+        addLabel(page, "// simple button", y)
+        y = y + 18
+
+        local simpleBtn = Instance.new("TextButton")
+        simpleBtn.Position = UDim2.new(0, 0, 0, y)
+        simpleBtn.Size = UDim2.new(0, 160, 0, 32)
+        simpleBtn.BackgroundColor3 = Color3.fromRGB(6, 15, 10)
+        simpleBtn.AutoButtonColor = false
+        simpleBtn.Font = Enum.Font.RobotoMono
+        simpleBtn.TextSize = 14
+        simpleBtn.TextColor3 = THEME.Green
+        simpleBtn.Text = "[ BUTTON ]"
+        simpleBtn.ZIndex = 6
+        simpleBtn.Parent = page
+
+        local simpleCorner = Instance.new("UICorner")
+        simpleCorner.CornerRadius = UDim.new(0, 4)
+        simpleCorner.Parent = simpleBtn
+        local simpleStroke = addBorder(simpleBtn)
+
+        animatePress(simpleBtn, simpleStroke)
+        animateHover(simpleBtn, Color3.fromRGB(6, 15, 10), THEME.GreenSoft)
+        clickScan(simpleBtn)
+
+        simpleBtn.MouseButton1Click:Connect(function()
+            API.Callbacks.OnSimpleButtonClick()
+        end)
+        y = y + 48
+
+        addLabel(page, "// button with confirm dialog", y)
+        y = y + 18
+
+        local dialogBtn = Instance.new("TextButton")
+        dialogBtn.Position = UDim2.new(0, 0, 0, y)
+        dialogBtn.Size = UDim2.new(0, 200, 0, 32)
+        dialogBtn.BackgroundColor3 = Color3.fromRGB(6, 15, 10)
+        dialogBtn.AutoButtonColor = false
+        dialogBtn.Font = Enum.Font.RobotoMono
+        dialogBtn.TextSize = 14
+        dialogBtn.TextColor3 = THEME.Green
+        dialogBtn.Text = "[ OPEN DIALOG ]"
+        dialogBtn.ZIndex = 6
+        dialogBtn.Parent = page
+
+        local dialogCorner = Instance.new("UICorner")
+        dialogCorner.CornerRadius = UDim.new(0, 4)
+        dialogCorner.Parent = dialogBtn
+        local dialogStroke = addBorder(dialogBtn)
+
+        animatePress(dialogBtn, dialogStroke)
+        animateHover(dialogBtn, Color3.fromRGB(6, 15, 10), THEME.GreenSoft)
+        clickScan(dialogBtn)
+
+        dialogBtn.MouseButton1Click:Connect(function()
+            showConfirmDialog("Are you sure you want to proceed?")
+        end)
+        y = y + 50
+
+    elseif section.Name == "VISUALS" then
+        local viewport = Instance.new("ViewportFrame")
+        viewport.Position = UDim2.new(0.5, -100, 0, 20)
+        viewport.Size = UDim2.new(0, 200, 0, 220)
+        viewport.BackgroundColor3 = Color3.fromRGB(6, 15, 10)
+        viewport.BorderSizePixel = 0
+        viewport.ZIndex = 6
+        viewport.Parent = page
+
+        local vpCorner = Instance.new("UICorner")
+        vpCorner.CornerRadius = UDim.new(0, 6)
+        vpCorner.Parent = viewport
+        local vpStroke = addBorder(viewport)
+
+        local vpCamera = Instance.new("Camera")
+        vpCamera.Parent = viewport
+        viewport.CurrentCamera = vpCamera
+
+        local charClone
+        local loadCharacterPreview
+
+        loadCharacterPreview = function()
+            for i = #activeEffects, 1, -1 do
+                FadeOutEffect(activeEffects[i], charClone, true)
+                table.remove(activeEffects, i)
+            end
+
+            if charClone then
+                charClone:Destroy()
+                charClone = nil
+            end
+
+            local targetChar = Workspace:FindFirstChild("MenuCharacter")
+            if not targetChar then
+                for _, obj in ipairs(Workspace:GetDescendants()) do
+                    if obj.Name == "MenuCharacter" and obj:IsA("Model") then
+                        targetChar = obj
+                        break
+                    end
+                end
+            end
+
+            if not targetChar then return end
+
+            targetChar.Archivable = true
+            for _, d in ipairs(targetChar:GetDescendants()) do
+                if d:IsA("BasePart") or d:IsA("Accessory") or d:IsA("Clothing") then
+                    d.Archivable = true
+                end
+            end
+
+            local ok, clone = pcall(function()
+                return targetChar:Clone()
+            end)
+
+            if not ok or not clone then return end
+
+            charClone = clone
+            charClone.Parent = viewport
+            for _, d in ipairs(charClone:GetDescendants()) do
+                if d:IsA("Script") or d:IsA("LocalScript") then
+                    d:Destroy()
+                end
+            end
+            local hum = charClone:FindFirstChildOfClass("Humanoid")
+            if hum then
+                hum.PlatformStand = true
+            end
+        end
+        loadCharacterPreview()
+
+        local vpSpin = 0
+        RunService.RenderStepped:Connect(function(dt)
+            if charClone and charClone.Parent then
+                local hrp = charClone:FindFirstChild("HumanoidRootPart") or charClone.PrimaryPart or charClone:FindFirstChildWhichIsA("BasePart")
+                if hrp then
+                    vpSpin = vpSpin + dt * 0.5
+                    local radius = 9
+                    local center = hrp.Position
+                    vpCamera.CFrame = CFrame.new(
+                        center + Vector3.new(math.sin(vpSpin) * radius, 1.5, math.cos(vpSpin) * radius),
+                        center
+                    )
+                end
+            end
+        end)
+
+        local y = 250
+
+        addLabel(page, "// visual: spinning ball toggle", y)
+        y = y + 18
+
+        local ballHolder = Instance.new("Frame")
+        ballHolder.Position = UDim2.new(0, 0, 0, y)
+        ballHolder.Size = UDim2.new(0, 40, 0, 40)
+        ballHolder.BackgroundTransparency = 1
+        ballHolder.ZIndex = 6
+        ballHolder.Parent = page
+
+        local ball = Instance.new("Frame")
+        ball.Size = UDim2.new(1, 0, 1, 0)
+        ball.BackgroundColor3 = Color3.fromRGB(6, 15, 10)
+        ball.ZIndex = 6
+        ball.Parent = ballHolder
+        local ballCorner = Instance.new("UICorner")
+        ballCorner.CornerRadius = UDim.new(1, 0)
+        ballCorner.Parent = ball
+        local ballStroke = addBorder(ball)
+
+        local ballMark = Instance.new("Frame")
+        ballMark.AnchorPoint = Vector2.new(0.5, 0)
+        ballMark.Position = UDim2.new(0.5, 0, 0, 2)
+        ballMark.Size = UDim2.new(0, 3, 0, 10)
+        ballMark.BackgroundColor3 = THEME.Green
+        ballMark.BorderSizePixel = 0
+        ballMark.ZIndex = 7
+        ballMark.Parent = ball
+
+        local ballToggleBtn = Instance.new("TextButton")
+        ballToggleBtn.Position = UDim2.new(0, 60, 0, y + 4)
+        ballToggleBtn.Size = UDim2.new(0, 130, 0, 32)
+        ballToggleBtn.BackgroundColor3 = Color3.fromRGB(6, 15, 10)
+        ballToggleBtn.AutoButtonColor = false
+        ballToggleBtn.Font = Enum.Font.RobotoMono
+        ballToggleBtn.TextSize = 14
+        ballToggleBtn.TextColor3 = THEME.Green
+        ballToggleBtn.Text = "[ ВКЛ / ВЫКЛ ]"
+        ballToggleBtn.ZIndex = 6
+        ballToggleBtn.Parent = page
+
+        local ballBtnCorner = Instance.new("UICorner")
+        ballBtnCorner.CornerRadius = UDim.new(0, 4)
+        ballBtnCorner.Parent = ballToggleBtn
+        local ballBtnStroke = addBorder(ballToggleBtn)
+
+        animatePress(ballToggleBtn, ballBtnStroke)
+        animateHover(ballToggleBtn, Color3.fromRGB(6, 15, 10), THEME.GreenSoft)
+        clickScan(ballToggleBtn)
+
+        local ballSpinning = false
+        local ballConn
+        local function startBallSpin()
+            if ballConn then return end
+            local angle = 0
+            local dir = 1
+            ballConn = RunService.RenderStepped:Connect(function(dt)
+                angle = angle + dir * dt * 180
+                if angle > 35 then dir = -1 end
+                if angle < -35 then dir = 1 end
+                ball.Rotation = angle
+            end)
+        end
+        local function stopBallSpin()
+            if ballConn then
+                ballConn:Disconnect()
+                ballConn = nil
+            end
+            TweenService:Create(ball, TweenInfo.new(0.2), {Rotation = 0}):Play()
+        end
+
+        ballToggleBtn.MouseButton1Click:Connect(function()
+            ballSpinning = not ballSpinning
+            if ballSpinning then
+                ball.BackgroundColor3 = THEME.GreenSoft
+                startBallSpin()
+                setPhotoWindowVisible(true)
+            else
+                ball.BackgroundColor3 = Color3.fromRGB(6, 15, 10)
+                stopBallSpin()
+                setPhotoWindowVisible(false)
+            end
+            API.Callbacks.OnBallToggle(ballSpinning)
+        end)
+
+        y = y + 60
+
+        addLabel(page, "// vargar death effect toggle", y)
+        y = y + 18
+
+        local switchBg = Instance.new("TextButton")
+        switchBg.Position = UDim2.new(0, 0, 0, y)
+        switchBg.Size = UDim2.new(0, 64, 0, 28)
+        switchBg.BackgroundColor3 = Color3.fromRGB(15, 30, 20)
+        switchBg.AutoButtonColor = false
+        switchBg.Text = ""
+        switchBg.ZIndex = 6
+        switchBg.Parent = page
+
+        local switchCorner = Instance.new("UICorner")
+        switchCorner.CornerRadius = UDim.new(1, 0)
+        switchCorner.Parent = switchBg
+        local switchStroke = addBorder(switchBg)
+
+        local switchKnob = Instance.new("Frame")
+        switchKnob.AnchorPoint = Vector2.new(0, 0.5)
+        switchKnob.Position = UDim2.new(0, 3, 0.5, 0)
+        switchKnob.Size = UDim2.new(0, 22, 0, 22)
+        switchKnob.BackgroundColor3 = THEME.GreenDim
+        switchKnob.BorderSizePixel = 0
+        switchKnob.ZIndex = 7
+        switchKnob.Parent = switchBg
+
+        local knobCorner = Instance.new("UICorner")
+        knobCorner.CornerRadius = UDim.new(1, 0)
+        knobCorner.Parent = switchKnob
+
+        local switchLabel = Instance.new("TextLabel")
+        switchLabel.Position = UDim2.new(0, 74, 0, -2)
+        switchLabel.Size = UDim2.new(0, 140, 1, 0)
+        switchLabel.BackgroundTransparency = 1
+        switchLabel.Font = Enum.Font.RobotoMono
+        switchLabel.TextSize = 13
+        switchLabel.TextColor3 = THEME.Green
+        switchLabel.TextXAlignment = Enum.TextXAlignment.Left
+        switchLabel.Text = "DEATH EFFECT: OFF"
+        switchLabel.ZIndex = 6
+        switchLabel.Parent = page
+
+        switchBg.MouseButton1Click:Connect(function()
+            deathEffectEnabled = not deathEffectEnabled
+            if deathEffectEnabled then
+                TweenService:Create(switchKnob, TweenInfo.new(0.2, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+                    Position = UDim2.new(1, -25, 0.5, 0)
+                }):Play()
+                TweenService:Create(switchKnob, TweenInfo.new(0.2), {BackgroundColor3 = THEME.Green}):Play()
+                TweenService:Create(switchBg, TweenInfo.new(0.2), {BackgroundColor3 = THEME.GreenSoft}):Play()
+                switchLabel.Text = "DEATH EFFECT: ON"
+            else
+                TweenService:Create(switchKnob, TweenInfo.new(0.2, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+                    Position = UDim2.new(0, 3, 0.5, 0)
+                }):Play()
+                TweenService:Create(switchKnob, TweenInfo.new(0.2), {BackgroundColor3 = THEME.GreenDim}):Play()
+                TweenService:Create(switchBg, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(15, 30, 20)}):Play()
+                switchLabel.Text = "DEATH EFFECT: OFF"
+            end
+            API.Callbacks.OnDeathEffectToggle(deathEffectEnabled)
+        end)
+
+        y = y + 50
+
+        addLabel(page, "// effect preview", y)
+        y = y + 18
+
+        local effectBtnWidth = 140
+        local col = 0
+        for _, effect in ipairs(EFFECTS) do
+            local effectBtn = Instance.new("TextButton")
+            effectBtn.Position = UDim2.new(0, col * (effectBtnWidth + 10), 0, y)
+            effectBtn.Size = UDim2.new(0, effectBtnWidth, 0, 32)
+            effectBtn.BackgroundColor3 = Color3.fromRGB(6, 15, 10)
+            effectBtn.AutoButtonColor = false
+            effectBtn.Font = Enum.Font.RobotoMono
+            effectBtn.TextSize = 13
+            effectBtn.TextColor3 = THEME.Green
+            effectBtn.Text = "[ " .. effect.Name .. " ]"
+            effectBtn.ZIndex = 6
+            effectBtn.Parent = page
+
+            local ecCorner = Instance.new("UICorner")
+            ecCorner.CornerRadius = UDim.new(0, 4)
+            ecCorner.Parent = effectBtn
+            local ecStroke = addBorder(effectBtn)
+
+            animatePress(effectBtn, ecStroke)
+            animateHover(effectBtn, Color3.fromRGB(6, 15, 10), THEME.GreenSoft)
+            clickScan(effectBtn)
+
+            effectBtn.MouseButton1Click:Connect(function()
+                if charClone then
+                    effectBtn.Active = false
+                    effect.Preview(charClone, function()
+                        loadCharacterPreview()
+                        effectBtn.Active = true
+                    end)
+                end
+                API.Callbacks.OnEffectTriggered(effect.Name)
+            end)
+
+            col = col + 1
+            if col >= 2 then
+                col = 0
+                y = y + 40
+            end
+        end
+        if col ~= 0 then
+            y = y + 40
+        end
+
+        local resetBtn = Instance.new("TextButton")
+        resetBtn.Position = UDim2.new(0, 0, 0, y)
+        resetBtn.Size = UDim2.new(0, effectBtnWidth, 0, 32)
+        resetBtn.BackgroundColor3 = Color3.fromRGB(6, 15, 10)
+        resetBtn.AutoButtonColor = false
+        resetBtn.Font = Enum.Font.RobotoMono
+        resetBtn.TextSize = 13
+        resetBtn.TextColor3 = THEME.Green
+        resetBtn.Text = "[ RESET PREVIEW ]"
+        resetBtn.ZIndex = 6
+        resetBtn.Parent = page
+
+        local resetCorner = Instance.new("UICorner")
+        resetCorner.CornerRadius = UDim.new(0, 4)
+        resetCorner.Parent = resetBtn
+        local resetStroke = addBorder(resetBtn)
+
+        animatePress(resetBtn, resetStroke)
+        animateHover(resetBtn, Color3.fromRGB(6, 15, 10), THEME.GreenSoft)
+        clickScan(resetBtn)
+
+        resetBtn.MouseButton1Click:Connect(function()
+            loadCharacterPreview()
+        end)
+
+        y = y + 50
+    end
+
+    updatePageCanvas(page)
+    pages[section.Name] = page
+end
+
+------------------------------------------------------------
+-- BOOT-ЛОГ И УПРАВЛЕНИЕ МЕНЮ
+------------------------------------------------------------
+local bootFrame = Instance.new("Frame")
+bootFrame.Name = "BootLog"
+bootFrame.Size = UDim2.new(1, 0, 1, 0)
+bootFrame.BackgroundColor3 = THEME.Bg
+bootFrame.BorderSizePixel = 0
+bootFrame.ZIndex = 15
+bootFrame.Visible = false
+bootFrame.Parent = main
+
+local bootPad = Instance.new("UIPadding")
+bootPad.PaddingTop = UDim.new(0, 16)
+bootPad.PaddingLeft = UDim.new(0, 16)
+bootPad.Parent = bootFrame
+
+local bootLabel = Instance.new("TextLabel")
+bootLabel.BackgroundTransparency = 1
+bootLabel.Size = UDim2.new(1, -20, 1, -20)
+bootLabel.Font = Enum.Font.RobotoMono
+bootLabel.TextSize = 14
+bootLabel.TextColor3 = THEME.Green
+bootLabel.TextXAlignment = Enum.TextXAlignment.Left
+bootLabel.TextYAlignment = Enum.TextYAlignment.Top
+bootLabel.TextWrapped = true
+bootLabel.Text = ""
+bootLabel.ZIndex = 15
+bootLabel.Parent = bootFrame
+
+local BOOT_LINES = {
+    "> connecting to bandit9.core ...",
+    "> access token accepted",
+    "> loading modules [player] [visual] [config] ...",
+    "> decrypting interface ...",
+    "> welcome, " .. (player.Name or "user"),
+}
+
+local function playBootSequence(onDone)
+    bootFrame.Visible = true
+    bootFrame.BackgroundTransparency = 0
+    bootLabel.TextTransparency = 0
+    bootLabel.Text = ""
+    task.spawn(function()
+        local full = ""
+        for _, line in ipairs(BOOT_LINES) do
+            for i = 1, #line do
+                bootLabel.Text = full .. string.sub(line, 1, i) .. "_"
+                task.wait(0.008)
+            end
+            full = full .. line .. "\n"
+            bootLabel.Text = full
+            task.wait(0.15)
+        end
+        task.wait(0.25)
+        TweenService:Create(bootFrame, TweenInfo.new(0.3), {BackgroundTransparency = 1}):Play()
+        TweenService:Create(bootLabel, TweenInfo.new(0.3), {TextTransparency = 1}):Play()
+        task.wait(0.3)
+        bootFrame.Visible = false
+        bootFrame.BackgroundTransparency = 0
+        bootLabel.TextTransparency = 0
+        if onDone then onDone() end
+    end)
+end
+
+local SHUTDOWN_LINES = {
+    "> saving session ...",
+    "> closing modules [player] [visual] [config] ...",
+    "> decrypting interface ...",
+    "> connection terminated_",
+}
+
+local function playShutdownSequence(onDead)
+    bootFrame.Visible = true
+    bootFrame.BackgroundTransparency = 0
+    bootLabel.TextTransparency = 0
+    bootLabel.Text = ""
+    task.spawn(function()
+        local full = ""
+        for _, line in ipairs(SHUTDOWN_LINES) do
+            for i = 1, #line do
+                bootLabel.Text = full .. string.sub(line, 1, i) .. "_"
+                task.wait(0.006)
+            end
+            full = full .. line .. "\n"
+            bootLabel.Text = full
+            task.wait(0.12)
+        end
+        task.wait(0.15)
+        if onDead then onDead() end
+    end)
+end
+
+local function glitchShake(frame, duration)
+    duration = duration or 0.25
+    originalPos = frame.Position
+    task.spawn(function()
+        local t = 0
+        while t < duration do
+            local dx = math.random(-4, 4)
+            local dy = math.random(-3, 3)
+            frame.Position = originalPos + UDim2.new(0, dx, 0, dy)
+            task.wait(0.03)
+            t = t + 0.03
+        end
+        frame.Position = originalPos
+    end)
+end
+
+local isOpen = false
+local closing = false
+local targetSize = UDim2.new(0, 560, 0, 360)
+
+local function openMenu()
+    if isOpen or closing then return end
+    isOpen = true
+
+    matrixHolder.Visible = true
+    startMatrix()
+    for _, c in ipairs(columns) do
+        c.label.TextTransparency = 1
+        TweenService:Create(c.label, TweenInfo.new(0.6, Enum.EasingStyle.Quad), {TextTransparency = 0.15}):Play()
+    end
+
+    main.Visible = true
+    main.Size = UDim2.new(0, 0, 0, 0)
+    main.BackgroundTransparency = 0
+    main.Rotation = -3
+
+    TweenService:Create(main, TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+        Size = targetSize,
+        Rotation = 0,
+    }):Play()
+
+    TweenService:Create(mainStroke, TweenInfo.new(0.4), {Transparency = 0.1}):Play()
+    TweenService:Create(glow1, TweenInfo.new(0.4), {Transparency = 0.85}):Play()
+
+    TweenService:Create(watermark, TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+        Position = UDim2.new(0.5, 0, 0, 8)
+    }):Play()
+
+    task.delay(0.15, function()
+        glitchShake(main, 0.2)
+    end)
+
+    playBootSequence(function()
+        if not activeTab then
+            setActiveTab(SECTIONS[1].Name, SECTIONS[1].Cmd)
+        end
+    end)
+end
+
+local function closeMenu()
+    if not isOpen or closing then return end
+    closing = true
+
+    playShutdownSequence(function()
+        isOpen = false
+        glitchShake(main, 0.18)
+
+        task.delay(0.12, function()
+            local tw = TweenService:Create(main, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.In), {
+                Size = UDim2.new(0, 0, 0, 0),
+                Rotation = 4,
+            })
+            TweenService:Create(mainStroke, TweenInfo.new(0.25), {Transparency = 1}):Play()
+            TweenService:Create(glow1, TweenInfo.new(0.25), {Transparency = 1}):Play()
+            TweenService:Create(watermark, TweenInfo.new(0.3), {
+                Position = UDim2.new(0.5, 0, 0, -40)
+            }):Play()
+
+            for _, c in ipairs(columns) do
+                TweenService:Create(c.label, TweenInfo.new(0.35, Enum.EasingStyle.Quad), {TextTransparency = 1}):Play()
+            end
+
+            tw:Play()
+            tw.Completed:Connect(function()
+                main.Visible, main.Rotation, matrixHolder.Visible, isOpen, closing = false, 0, false, false, false
+                activeTab = nil
+                bootFrame.Visible = false
+            end)
+        end)
+    end)
+end
+
+local function toggleMenu()
+    if closing then return end
+    if isOpen then closeMenu() else openMenu() end
+end
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if input.KeyCode == KEY_TO_TOGGLE then
+        toggleMenu()
+    end
+end)
+
+task.wait(0.5)
+openMenu()
